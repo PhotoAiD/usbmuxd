@@ -44,6 +44,7 @@
 #include "usb.h"
 
 extern int no_preflight;
+extern int should_exit;
 
 #ifdef HAVE_LIBIMOBILEDEVICE
 #ifndef HAVE_ENUM_IDEVICE_CONNECTION_TYPE
@@ -133,6 +134,9 @@ static void np_callback(const char* notification, void* userdata)
 static void* preflight_worker_handle_device_add(void* userdata)
 {
 	struct device_info *info = (struct device_info*)userdata;
+	
+	usbmuxd_log(LL_INFO, "%s: Device connected - ID: %d, Serial: %s", __func__, info->id, info->serial);
+	
 	struct idevice_private *_dev = (struct idevice_private*)malloc(sizeof(struct idevice_private));
 	_dev->udid = strdup(info->serial);
 	_dev->mux_id = info->id;
@@ -156,6 +160,8 @@ retry:
 	lerr = lockdownd_client_new(dev, &lockdown, "usbmuxd");
 	if (lerr != LOCKDOWN_E_SUCCESS) {
 		usbmuxd_log(LL_ERROR, "%s: ERROR: Could not connect to lockdownd on device %s, lockdown error %d", __func__, _dev->udid, lerr);
+		usbmuxd_log(LL_FATAL, "%s: CRITICAL ERROR: Unable to establish connection with device. Initiating daemon shutdown...", __func__);
+		should_exit = 1;
 		goto leave;
 	}
 

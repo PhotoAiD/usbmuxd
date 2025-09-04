@@ -695,7 +695,7 @@ int main(int argc, char *argv[])
 	if (lockfile) {
 		res = lfd = open(lockfile, O_WRONLY|O_CREAT, 0644);
 		if(res == -1) {
-			usbmuxd_log(LL_FATAL, "Could not open lockfile");
+			usbmuxd_log(LL_FATAL, "Could not open lockfile '%s': %s (errno=%d)", lockfile, strerror(errno), errno);
 			goto terminate;
 		}
 		lock.l_type = F_WRLCK;
