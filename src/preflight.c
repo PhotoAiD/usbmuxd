@@ -25,7 +25,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
-#include <signal.h>
 
 #include <sys/time.h>
 
@@ -161,10 +160,6 @@ retry:
 	lerr = lockdownd_client_new(dev, &lockdown, "usbmuxd");
 	if (lerr != LOCKDOWN_E_SUCCESS) {
 		usbmuxd_log(LL_ERROR, "%s: ERROR: Could not connect to lockdownd on device %s, lockdown error %d", __func__, _dev->udid, lerr);
-		usbmuxd_log(LL_FATAL, "%s: CRITICAL ERROR: Unable to establish connection with device. Initiating daemon shutdown...", __func__);
-		should_exit = 1;
-		// Send SIGTERM to self to interrupt ppoll() in main loop immediately
-		kill(getpid(), SIGTERM);
 		goto leave;
 	}
 
