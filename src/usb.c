@@ -185,29 +185,12 @@ static void tx_callback(struct libusb_transfer *xfer)
 int usb_send(struct usb_device *dev, const unsigned char *buf, int length)
 {
 	int res;
-	
-	// ERROR INJECTION: Simulate real device disconnection
-	// Once triggered, ALL subsequent transfers fail (like a real disconnect)
-	static int packet_count = 0;
-	static int device_disconnected = 0;
-	
+
 	struct libusb_transfer *xfer = libusb_alloc_transfer(0);
 	libusb_fill_bulk_transfer(xfer, dev->handle, dev->ep_out, (void*)buf, length, tx_callback, dev, 0);
-	
-	// Count packets and trigger disconnect on 36-byte packet after connection is established
-	packet_count++;
-	if (length == 36 && packet_count > 5 && !device_disconnected) {
-		device_disconnected = 1;
-		usbmuxd_log(LL_WARNING, "[SIMULATED] Device disconnect triggered at packet %d, len %d", packet_count, length);
-	}
-	
-	// Once disconnected, ALL transfers fail (including RST packets in teardown)
-	if (device_disconnected) {
-		res = LIBUSB_ERROR_NO_DEVICE;  // -4
-	} else {
-		res = libusb_submit_transfer(xfer);
-	}
-	
+
+	res = libusb_submit_transfer(xfer);
+
 	if(res < 0) {
 		usbmuxd_log(LL_ERROR, "Failed to submit TX transfer %p len %d to device %d-%d: %s", buf, length, dev->bus, dev->address, libusb_error_name(res));
 		libusb_free_transfer(xfer);
