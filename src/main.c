@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/in.h>
@@ -62,6 +63,7 @@ int should_exit;
 int should_discover;
 int use_logfile = 0;
 int no_preflight = 0;
+int should_restart = 0;
 
 // Global state for main.c
 static int verbose = 0;
@@ -74,6 +76,12 @@ static int opt_exit = 0;
 static int exit_signal = 0;
 static int daemon_pipe;
 static const char *listen_addr = NULL;
+
+// Restart mechanism variables
+static char **saved_argv = NULL;
+static int saved_argc = 0;
+static int restart_count = 0;
+static time_t last_restart_time = 0;
 
 static int report_to_parent = 0;
 
@@ -670,6 +678,10 @@ int main(int argc, char *argv[])
 	struct flock lock;
 	char pids[10];
 
+	// Save original arguments for potential restart
+	saved_argc = argc;
+	saved_argv = argv;
+
 	parse_opts(argc, argv);
 
 	argc -= optind;
@@ -905,6 +917,36 @@ int main(int argc, char *argv[])
 	device_shutdown();
 	client_shutdown();
 	usbmuxd_log(LL_NOTICE, "Shutdown complete");
+
+	// Check if we should restart instead of exiting
+	if (should_restart) {
+		time_t now = time(NULL);
+
+		// Reset counter if more than 60 seconds since last restart
+		if (now - last_restart_time > 60) {
+			restart_count = 0;
+		}
+
+		if (restart_count < 3) {
+			restart_count++;
+			last_restart_time = now;
+
+			usbmuxd_log(LL_WARNING, "Restarting usbmuxd (attempt %d/3) due to device disconnect error", restart_count);
+
+			// Close log file if open
+			if (use_logfile) {
+				fflush(stderr);
+			}
+
+			// Execute the program again with original arguments
+			execv("/proc/self/exe", saved_argv);
+
+			// If execv fails, log error and continue to terminate
+			usbmuxd_log(LL_ERROR, "Failed to restart process: %s", strerror(errno));
+		} else {
+			usbmuxd_log(LL_ERROR, "Restart limit reached (3 attempts), terminating");
+		}
+	}
 
 terminate:
 	log_disable_syslog();

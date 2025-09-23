@@ -45,6 +45,7 @@
 #include <signal.h>
 
 extern int should_exit;
+extern int should_restart;
 
 int next_device_id;
 
@@ -238,13 +239,13 @@ static int send_packet(struct mux_device *dev, enum mux_protocol proto, void *he
 	if((res = usb_send(dev->usbdev, buffer, total)) < 0) {
 		usbmuxd_log(LL_ERROR, "usb_send failed while sending packet (len %d) to device %d: %d", total, dev->id, res);
 		if (res == -4) {
-			usbmuxd_log(LL_INFO, "Device %d disconnected unexpectedly (LIBUSB_ERROR_NO_DEVICE), forcing shutdown", dev->id);
+			usbmuxd_log(LL_INFO, "Device %d disconnected unexpectedly (LIBUSB_ERROR_NO_DEVICE), requesting restart", dev->id);
 			// Mark device as dead to prevent further operations
 			dev->state = MUXDEV_DEAD;
-			// Set global exit flag
+			// Set flags to trigger restart
+			should_restart = 1;
 			should_exit = 1;
-			// Send SIGTERM to self to trigger immediate shutdown
-			// SIGTERM is handled better than SIGUSR1 for shutdown
+			// Send SIGTERM to self to trigger immediate shutdown and restart
 			kill(getpid(), SIGTERM);
 		}
 		free(buffer);
