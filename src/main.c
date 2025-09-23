@@ -261,6 +261,12 @@ static int create_socket(void)
 
 static void handle_signal(int sig)
 {
+	if (sig == SIGHUP && should_restart) {
+		// SIGHUP is used internally for restart mechanism
+		usbmuxd_log(LL_INFO, "Caught SIGHUP for restart, triggering exit");
+		should_exit = 1;
+		return;
+	}
 	if (sig != SIGUSR1 && sig != SIGUSR2) {
 		usbmuxd_log(LL_NOTICE,"Caught signal %d, exiting", sig);
 		should_exit = 1;
@@ -297,6 +303,7 @@ static void set_signal_handlers(void)
 	sigaddset(&set, SIGTERM);
 	sigaddset(&set, SIGUSR1);
 	sigaddset(&set, SIGUSR2);
+	sigaddset(&set, SIGHUP);
 	sigprocmask(SIG_SETMASK, &set, NULL);
 
 	memset(&sa, 0, sizeof(struct sigaction));
@@ -306,6 +313,7 @@ static void set_signal_handlers(void)
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGUSR1, &sa, NULL);
 	sigaction(SIGUSR2, &sa, NULL);
+	sigaction(SIGHUP, &sa, NULL);
 }
 
 #ifndef HAVE_PPOLL
@@ -937,6 +945,17 @@ int main(int argc, char *argv[])
 			if (use_logfile) {
 				fflush(stderr);
 			}
+
+			// Clear any pending signals before restart
+			signal(SIGTERM, SIG_DFL);
+			signal(SIGINT, SIG_DFL);
+			signal(SIGQUIT, SIG_DFL);
+			signal(SIGHUP, SIG_DFL);
+
+			// Clear the signal mask
+			sigset_t sigset;
+			sigemptyset(&sigset);
+			sigprocmask(SIG_SETMASK, &sigset, NULL);
 
 			// Execute the program again with original arguments
 			execv("/proc/self/exe", saved_argv);

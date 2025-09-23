@@ -245,8 +245,8 @@ static int send_packet(struct mux_device *dev, enum mux_protocol proto, void *he
 			// Set flags to trigger restart
 			should_restart = 1;
 			should_exit = 1;
-			// Send SIGTERM to self to trigger immediate shutdown and restart
-			kill(getpid(), SIGTERM);
+			// Send SIGHUP to interrupt poll and trigger restart
+			kill(getpid(), SIGHUP);
 		}
 		free(buffer);
 		return res;
