@@ -101,7 +101,7 @@ static void usb_disconnect(struct usb_device *dev)
 
 	// Busy-wait until all xfers are closed (with timeout to prevent hang)
 	int timeout_count = 0;
-	const int MAX_WAIT_MS = 5000; // 5 second maximum wait
+	const int MAX_WAIT_MS = 3000; // 3 second maximum wait
 	while(collection_count(&dev->rx_xfers) || collection_count(&dev->tx_xfers)) {
 		struct timeval tv;
 		int res;

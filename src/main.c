@@ -81,7 +81,6 @@ static const char *listen_addr = NULL;
 static char **saved_argv = NULL;
 static int saved_argc = 0;
 static int restart_count = 0;
-static time_t last_restart_time = 0;
 
 static int report_to_parent = 0;
 
@@ -687,8 +686,13 @@ int main(int argc, char *argv[])
 	char pids[10];
 
 	// Save original arguments for potential restart
+	// We need to create a proper NULL-terminated copy for execv
 	saved_argc = argc;
-	saved_argv = argv;
+	saved_argv = malloc(sizeof(char*) * (argc + 1));
+	for (int i = 0; i < argc; i++) {
+		saved_argv[i] = argv[i];
+	}
+	saved_argv[argc] = NULL;  // execv requires NULL termination
 
 	parse_opts(argc, argv);
 
@@ -706,8 +710,17 @@ int main(int argc, char *argv[])
 	log_level = verbose;
 
 	usbmuxd_log(LL_NOTICE, "usbmuxd v%s starting up", PACKAGE_VERSION);
+
+	// Check if this is a restart
+	char *restart_env = getenv("USBMUXD_RESTART_COUNT");
+	if (restart_env) {
+		int count = atoi(restart_env);
+		usbmuxd_log(LL_NOTICE, "This is restart attempt %d/3", count);
+	}
+
 	should_exit = 0;
 	should_discover = 0;
+	should_restart = 0;
 
 	set_signal_handlers();
 	signal(SIGPIPE, SIG_IGN);
@@ -928,40 +941,50 @@ int main(int argc, char *argv[])
 
 	// Check if we should restart instead of exiting
 	if (should_restart) {
-		time_t now = time(NULL);
-
-		// Reset counter if more than 60 seconds since last restart
-		if (now - last_restart_time > 60) {
-			restart_count = 0;
+		// Get restart count from environment variable
+		char *restart_count_env = getenv("USBMUXD_RESTART_COUNT");
+		if (restart_count_env) {
+			restart_count = atoi(restart_count_env);
 		}
 
 		if (restart_count < 3) {
 			restart_count++;
-			last_restart_time = now;
 
 			usbmuxd_log(LL_WARNING, "Restarting usbmuxd (attempt %d/3) due to device disconnect error", restart_count);
 
-			// Close log file if open
-			if (use_logfile) {
-				fflush(stderr);
+			// Set environment variable for next restart
+			char count_str[32];
+			snprintf(count_str, sizeof(count_str), "%d", restart_count);
+			setenv("USBMUXD_RESTART_COUNT", count_str, 1);
+
+			// Fork a child process to handle the restart after delay
+			pid_t pid = fork();
+			if (pid == 0) {
+				// Child process: wait 5 seconds then restart
+				// Don't detach from terminal - we want to keep output visible
+
+				// Wait 5 seconds
+				sleep(5);
+
+				// Clear the signal mask
+				sigset_t sigset;
+				sigemptyset(&sigset);
+				sigprocmask(SIG_SETMASK, &sigset, NULL);
+
+				// Execute the program again with original arguments
+				execv(saved_argv[0], saved_argv);
+
+				// If execv fails, try to report it
+				fprintf(stderr, "Failed to restart: %s\n", strerror(errno));
+				exit(1);
+			} else if (pid > 0) {
+				// Parent process
+				usbmuxd_log(LL_INFO, "Forked child process (pid %d) to restart after 5 seconds", pid);
+			} else {
+				// Fork failed
+				usbmuxd_log(LL_ERROR, "Failed to fork for restart: %s", strerror(errno));
 			}
-
-			// Clear any pending signals before restart
-			signal(SIGTERM, SIG_DFL);
-			signal(SIGINT, SIG_DFL);
-			signal(SIGQUIT, SIG_DFL);
-			signal(SIGHUP, SIG_DFL);
-
-			// Clear the signal mask
-			sigset_t sigset;
-			sigemptyset(&sigset);
-			sigprocmask(SIG_SETMASK, &sigset, NULL);
-
-			// Execute the program again with original arguments
-			execv("/proc/self/exe", saved_argv);
-
-			// If execv fails, log error and continue to terminate
-			usbmuxd_log(LL_ERROR, "Failed to restart process: %s", strerror(errno));
+			// Parent continues to clean up and exit normally
 		} else {
 			usbmuxd_log(LL_ERROR, "Restart limit reached (3 attempts), terminating");
 		}
