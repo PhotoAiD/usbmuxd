@@ -99,7 +99,9 @@ static void usb_disconnect(struct usb_device *dev)
 		libusb_cancel_transfer(xfer);
 	} ENDFOREACH
 
-	// Busy-wait until all xfers are closed
+	// Busy-wait until all xfers are closed (with timeout to prevent hang)
+	int timeout_count = 0;
+	const int MAX_WAIT_MS = 5000; // 5 second maximum wait
 	while(collection_count(&dev->rx_xfers) || collection_count(&dev->tx_xfers)) {
 		struct timeval tv;
 		int res;
@@ -108,6 +110,13 @@ static void usb_disconnect(struct usb_device *dev)
 		tv.tv_usec = 1000;
 		if((res = libusb_handle_events_timeout(NULL, &tv)) < 0) {
 			usbmuxd_log(LL_ERROR, "libusb_handle_events_timeout for usb_disconnect failed: %s", libusb_error_name(res));
+			break;
+		}
+		
+		timeout_count++;
+		if (timeout_count > MAX_WAIT_MS) {
+			usbmuxd_log(LL_ERROR, "Timeout waiting for USB transfers to complete, forcing cleanup (rx:%d, tx:%d)", 
+				collection_count(&dev->rx_xfers), collection_count(&dev->tx_xfers));
 			break;
 		}
 	}
