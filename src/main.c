@@ -974,6 +974,13 @@ int main(int argc, char *argv[])
 				// Execute the program again with original arguments
 				execv(saved_argv[0], saved_argv);
 
+				// If that fails, try /proc/self/exe (Linux specific)
+				execv("/proc/self/exe", saved_argv);
+
+				// If that fails, try common installation paths
+				execv("/usr/local/sbin/usbmuxd", saved_argv);
+				execv("/usr/sbin/usbmuxd", saved_argv);
+
 				// If execv fails, try to report it
 				fprintf(stderr, "Failed to restart: %s\n", strerror(errno));
 				exit(1);
