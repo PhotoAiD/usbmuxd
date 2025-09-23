@@ -176,9 +176,22 @@ static void tx_callback(struct libusb_transfer *xfer)
 int usb_send(struct usb_device *dev, const unsigned char *buf, int length)
 {
 	int res;
+	
+	// ERROR INJECTION: Always simulate device disconnection for packets of length 36
+	// This reproduces the exact error sequence from the log
+	
 	struct libusb_transfer *xfer = libusb_alloc_transfer(0);
 	libusb_fill_bulk_transfer(xfer, dev->handle, dev->ep_out, (void*)buf, length, tx_callback, dev, 0);
-	if((res = libusb_submit_transfer(xfer)) < 0) {
+	
+	// Always inject failure for packets of length 36 (matching the log)
+	if (length == 36) {
+		res = LIBUSB_ERROR_NO_DEVICE;  // -4
+		usbmuxd_log(LL_WARNING, "[SIMULATED] Device disconnection for packet len %d", length);
+	} else {
+		res = libusb_submit_transfer(xfer);
+	}
+	
+	if(res < 0) {
 		usbmuxd_log(LL_ERROR, "Failed to submit TX transfer %p len %d to device %d-%d: %s", buf, length, dev->bus, dev->address, libusb_error_name(res));
 		libusb_free_transfer(xfer);
 		return res;

@@ -234,6 +234,9 @@ static int send_packet(struct mux_device *dev, enum mux_protocol proto, void *he
 
 	if((res = usb_send(dev->usbdev, buffer, total)) < 0) {
 		usbmuxd_log(LL_ERROR, "usb_send failed while sending packet (len %d) to device %d: %d", total, dev->id, res);
+		if (res == -4) {
+			usbmuxd_log(LL_INFO, "Device %d appears to be disconnected (LIBUSB_ERROR_NO_DEVICE)", dev->id);
+		}
 		free(buffer);
 		return res;
 	}
