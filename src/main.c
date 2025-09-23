@@ -81,6 +81,7 @@ static const char *listen_addr = NULL;
 static char **saved_argv = NULL;
 static int saved_argc = 0;
 static int restart_count = 0;
+static char real_executable_path[1024] = {0};
 
 static int report_to_parent = 0;
 
@@ -694,6 +695,20 @@ int main(int argc, char *argv[])
 	}
 	saved_argv[argc] = NULL;  // execv requires NULL termination
 
+	// Get the real executable path at startup
+	ssize_t len = readlink("/proc/self/exe", real_executable_path, sizeof(real_executable_path) - 1);
+	if (len > 0) {
+		real_executable_path[len] = '\0';
+		usbmuxd_log(LL_DEBUG, "Executable path: %s", real_executable_path);
+	} else {
+		// Fallback to argv[0] if /proc/self/exe doesn't work
+		if (realpath(argv[0], real_executable_path) == NULL) {
+			strncpy(real_executable_path, argv[0], sizeof(real_executable_path) - 1);
+			real_executable_path[sizeof(real_executable_path) - 1] = '\0';
+		}
+		usbmuxd_log(LL_DEBUG, "Using fallback executable path: %s", real_executable_path);
+	}
+
 	parse_opts(argc, argv);
 
 	argc -= optind;
@@ -971,18 +986,11 @@ int main(int argc, char *argv[])
 				sigemptyset(&sigset);
 				sigprocmask(SIG_SETMASK, &sigset, NULL);
 
-				// Execute the program again with original arguments
-				execv(saved_argv[0], saved_argv);
-
-				// If that fails, try /proc/self/exe (Linux specific)
-				execv("/proc/self/exe", saved_argv);
-
-				// If that fails, try common installation paths
-				execv("/usr/local/sbin/usbmuxd", saved_argv);
-				execv("/usr/sbin/usbmuxd", saved_argv);
+				// Execute the program using the path we determined at startup
+				execv(real_executable_path, saved_argv);
 
 				// If execv fails, try to report it
-				fprintf(stderr, "Failed to restart: %s\n", strerror(errno));
+				fprintf(stderr, "Failed to restart %s: %s\n", real_executable_path, strerror(errno));
 				exit(1);
 			} else if (pid > 0) {
 				// Parent process
