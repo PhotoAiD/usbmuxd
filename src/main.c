@@ -948,11 +948,6 @@ int main(int argc, char *argv[])
 		usbmuxd_log(LL_FATAL, "main_loop failed");
 
 	usbmuxd_log(LL_NOTICE, "usbmuxd shutting down");
-	device_kill_connections();
-	usb_shutdown();
-	device_shutdown();
-	client_shutdown();
-	usbmuxd_log(LL_NOTICE, "Shutdown complete");
 
 	// Check if we should restart instead of exiting
 	if (should_restart) {
@@ -972,38 +967,60 @@ int main(int argc, char *argv[])
 			snprintf(count_str, sizeof(count_str), "%d", restart_count);
 			setenv("USBMUXD_RESTART_COUNT", count_str, 1);
 
-			// Fork a child process to handle the restart after delay
-			pid_t pid = fork();
-			if (pid == 0) {
-				// Child process: wait 5 seconds then restart
-				// Don't detach from terminal - we want to keep output visible
+			// First clean up everything completely
+			device_kill_connections();
+			usb_shutdown();
+			device_shutdown();
+			client_shutdown();
 
-				// Wait 5 seconds
-				sleep(5);
-
-				// Clear the signal mask
-				sigset_t sigset;
-				sigemptyset(&sigset);
-				sigprocmask(SIG_SETMASK, &sigset, NULL);
-
-				// Execute the program using the path we determined at startup
-				execv(real_executable_path, saved_argv);
-
-				// If execv fails, try to report it
-				fprintf(stderr, "Failed to restart %s: %s\n", real_executable_path, strerror(errno));
-				exit(1);
-			} else if (pid > 0) {
-				// Parent process
-				usbmuxd_log(LL_INFO, "Forked child process (pid %d) to restart after 5 seconds", pid);
-			} else {
-				// Fork failed
-				usbmuxd_log(LL_ERROR, "Failed to fork for restart: %s", strerror(errno));
+			// Close the listening socket to free the port
+			if (listenfd >= 0) {
+				close(listenfd);
+				listenfd = -1;
 			}
-			// Parent continues to clean up and exit normally
+
+			// Remove socket file if using Unix socket
+			if (socket_path && access(socket_path, F_OK) == 0) {
+				unlink(socket_path);
+			}
+
+			// Close lockfile if we have one
+			if (lfd >= 0) {
+				close(lfd);
+				lfd = -1;
+				if (lockfile) {
+					unlink(lockfile);
+				}
+			}
+
+			usbmuxd_log(LL_NOTICE, "Cleanup complete, waiting before restart...");
+
+			// Wait a moment to ensure all resources are freed
+			sleep(2);
+
+			// Clear the signal mask before exec
+			sigset_t sigset;
+			sigemptyset(&sigset);
+			sigprocmask(SIG_SETMASK, &sigset, NULL);
+
+			// Execute the program directly (no fork)
+			usbmuxd_log(LL_INFO, "Executing restart...");
+			execv(real_executable_path, saved_argv);
+
+			// If execv fails, report it
+			usbmuxd_log(LL_FATAL, "Failed to restart %s: %s", real_executable_path, strerror(errno));
+			// Fall through to normal cleanup
 		} else {
 			usbmuxd_log(LL_ERROR, "Restart limit reached (3 attempts), terminating");
 		}
 	}
+
+	// Normal shutdown path (or if restart failed)
+	device_kill_connections();
+	usb_shutdown();
+	device_shutdown();
+	client_shutdown();
+	usbmuxd_log(LL_NOTICE, "Shutdown complete");
 
 terminate:
 	log_disable_syslog();
