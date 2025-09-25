@@ -162,8 +162,12 @@ retry:
 	lerr = lockdownd_client_new(dev, &lockdown, "usbmuxd");
 	if (lerr != LOCKDOWN_E_SUCCESS) {
 		usbmuxd_log(LL_ERROR, "%s: ERROR: Could not connect to lockdownd on device %s, lockdown error %d", __func__, _dev->udid, lerr);
-		// For now, don't trigger restart on lockdown errors - they're often transient
-		// The device will be made visible anyway and can be retried
+		usbmuxd_log(LL_INFO, "Lockdown connection failed, requesting restart");
+		// Set flags to trigger restart
+		should_restart = 1;
+		should_exit = 1;
+		// Send SIGHUP to interrupt poll and trigger restart
+		kill(getpid(), SIGHUP);
 		goto leave;
 	}
 
