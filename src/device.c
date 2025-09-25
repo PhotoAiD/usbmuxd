@@ -899,7 +899,16 @@ void device_remove(struct usb_device *usbdev)
 	} ENDFOREACH
 	mutex_unlock(&device_list_mutex);
 
-	usbmuxd_log(LL_WARNING, "Cannot find device entry while removing USB device %p on location 0x%x", usbdev, usb_get_location(usbdev));
+	usbmuxd_log(LL_ERROR, "Cannot find device entry while removing USB device %p on location 0x%x", usbdev, usb_get_location(usbdev));
+
+	// This is a critical error indicating device tracking corruption
+	// Trigger restart mechanism to recover
+	usbmuxd_log(LL_WARNING, "Device tracking inconsistency detected, triggering restart");
+	should_restart = 1;
+	__sync_synchronize(); // Memory barrier to ensure should_restart is visible before signal
+	should_exit = 1;
+	// Send SIGHUP to interrupt poll and trigger restart
+	kill(getpid(), SIGHUP);
 }
 
 void device_set_visible(int device_id)
