@@ -59,11 +59,11 @@ static const char *socket_path = "/var/run/usbmuxd";
 static const char *lockfile = DEFAULT_LOCKFILE;
 
 // Global state used in other files
-int should_exit;
+volatile int should_exit;
 int should_discover;
 int use_logfile = 0;
 int no_preflight = 0;
-int should_restart = 0;
+volatile int should_restart = 0;
 
 // Global state for main.c
 static int verbose = 0;

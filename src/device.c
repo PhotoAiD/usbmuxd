@@ -44,8 +44,8 @@
 #include "log.h"
 #include <signal.h>
 
-extern int should_exit;
-extern int should_restart;
+extern volatile int should_exit;
+extern volatile int should_restart;
 
 int next_device_id;
 

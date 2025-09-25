@@ -45,8 +45,8 @@
 #include "usb.h"
 
 extern int no_preflight;
-extern int should_exit;
-extern int should_restart;
+extern volatile int should_exit;
+extern volatile int should_restart;
 
 #ifdef HAVE_LIBIMOBILEDEVICE
 #ifndef HAVE_ENUM_IDEVICE_CONNECTION_TYPE
@@ -163,8 +163,9 @@ retry:
 	if (lerr != LOCKDOWN_E_SUCCESS) {
 		usbmuxd_log(LL_ERROR, "%s: ERROR: Could not connect to lockdownd on device %s, lockdown error %d", __func__, _dev->udid, lerr);
 		usbmuxd_log(LL_INFO, "Lockdown connection failed, requesting restart");
-		// Set flags to trigger restart
+		// Set flags to trigger restart (order matters!)
 		should_restart = 1;
+		__sync_synchronize(); // Memory barrier to ensure should_restart is visible before signal
 		should_exit = 1;
 		// Send SIGHUP to interrupt poll and trigger restart
 		kill(getpid(), SIGHUP);
