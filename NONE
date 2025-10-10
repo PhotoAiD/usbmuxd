@@ -1,8 +1,0 @@
-[00:18:28.837][3] usbmuxd v1.1.1-69-g523f700 starting up
-[00:18:28.837][0] Could not open lockfile '/var/run/usbmuxd.pid': Permission denied (errno=13)
-[00:19:29.301][3] usbmuxd v1.1.1-69-g523f700 starting up
-[00:19:29.301][0] Could not open lockfile '/var/run/usbmuxd.pid': Permission denied (errno=13)
-[00:19:36.574][3] usbmuxd v1.1.1-69-g523f700 starting up
-[00:19:36.574][0] Could not open lockfile '/var/run/usbmuxd.pid': Permission denied (errno=13)
-[00:19:40.227][3] usbmuxd v1.1.1-69-g523f700 starting up
-[00:19:40.227][0] Could not open lockfile '/var/run/usbmuxd.pid': Permission denied (errno=13)
