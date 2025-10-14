@@ -244,6 +244,7 @@ static int send_packet(struct mux_device *dev, enum mux_protocol proto, void *he
 			dev->state = MUXDEV_DEAD;
 			// Set flags to trigger restart
 			should_restart = 1;
+			__sync_synchronize(); // Memory barrier to ensure should_restart is visible before signal
 			should_exit = 1;
 			// Send SIGHUP to interrupt poll and trigger restart
 			kill(getpid(), SIGHUP);
