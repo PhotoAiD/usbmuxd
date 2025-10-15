@@ -42,6 +42,10 @@
 #include "preflight.h"
 #include "usb.h"
 #include "log.h"
+#include <signal.h>
+
+extern volatile int should_exit;
+extern volatile int should_restart;
 
 int next_device_id;
 
@@ -234,6 +238,17 @@ static int send_packet(struct mux_device *dev, enum mux_protocol proto, void *he
 
 	if((res = usb_send(dev->usbdev, buffer, total)) < 0) {
 		usbmuxd_log(LL_ERROR, "usb_send failed while sending packet (len %d) to device %d: %d", total, dev->id, res);
+		if (res == -4) {
+			usbmuxd_log(LL_INFO, "Device %d disconnected unexpectedly (LIBUSB_ERROR_NO_DEVICE), requesting restart", dev->id);
+			// Mark device as dead to prevent further operations
+			dev->state = MUXDEV_DEAD;
+			// Set flags to trigger restart
+			should_restart = 1;
+			__sync_synchronize(); // Memory barrier to ensure should_restart is visible before signal
+			should_exit = 1;
+			// Send SIGHUP to interrupt poll and trigger restart
+			kill(getpid(), SIGHUP);
+		}
 		free(buffer);
 		return res;
 	}
@@ -885,7 +900,16 @@ void device_remove(struct usb_device *usbdev)
 	} ENDFOREACH
 	mutex_unlock(&device_list_mutex);
 
-	usbmuxd_log(LL_WARNING, "Cannot find device entry while removing USB device %p on location 0x%x", usbdev, usb_get_location(usbdev));
+	usbmuxd_log(LL_ERROR, "Cannot find device entry while removing USB device %p on location 0x%x", usbdev, usb_get_location(usbdev));
+
+	// This is a critical error indicating device tracking corruption
+	// Trigger restart mechanism to recover
+	usbmuxd_log(LL_WARNING, "Device tracking inconsistency detected, triggering restart");
+	should_restart = 1;
+	__sync_synchronize(); // Memory barrier to ensure should_restart is visible before signal
+	should_exit = 1;
+	// Send SIGHUP to interrupt poll and trigger restart
+	kill(getpid(), SIGHUP);
 }
 
 void device_set_visible(int device_id)

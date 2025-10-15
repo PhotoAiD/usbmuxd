@@ -99,7 +99,9 @@ static void usb_disconnect(struct usb_device *dev)
 		libusb_cancel_transfer(xfer);
 	} ENDFOREACH
 
-	// Busy-wait until all xfers are closed
+	// Busy-wait until all xfers are closed (with timeout to prevent hang)
+	int timeout_count = 0;
+	const int MAX_WAIT_MS = 3000; // 3 second maximum wait
 	while(collection_count(&dev->rx_xfers) || collection_count(&dev->tx_xfers)) {
 		struct timeval tv;
 		int res;
@@ -108,6 +110,21 @@ static void usb_disconnect(struct usb_device *dev)
 		tv.tv_usec = 1000;
 		if((res = libusb_handle_events_timeout(NULL, &tv)) < 0) {
 			usbmuxd_log(LL_ERROR, "libusb_handle_events_timeout for usb_disconnect failed: %s", libusb_error_name(res));
+			break;
+		}
+
+		timeout_count++;
+		if (timeout_count > MAX_WAIT_MS) {
+			usbmuxd_log(LL_ERROR, "Timeout waiting for USB transfers to complete, forcing cleanup (rx:%d, tx:%d)",
+				collection_count(&dev->rx_xfers), collection_count(&dev->tx_xfers));
+
+			// Force free any remaining transfers
+			FOREACH(struct libusb_transfer *xfer, &dev->rx_xfers) {
+				libusb_free_transfer(xfer);
+			} ENDFOREACH
+			FOREACH(struct libusb_transfer *xfer, &dev->tx_xfers) {
+				libusb_free_transfer(xfer);
+			} ENDFOREACH
 			break;
 		}
 	}
@@ -176,9 +193,13 @@ static void tx_callback(struct libusb_transfer *xfer)
 int usb_send(struct usb_device *dev, const unsigned char *buf, int length)
 {
 	int res;
+
 	struct libusb_transfer *xfer = libusb_alloc_transfer(0);
 	libusb_fill_bulk_transfer(xfer, dev->handle, dev->ep_out, (void*)buf, length, tx_callback, dev, 0);
-	if((res = libusb_submit_transfer(xfer)) < 0) {
+
+	res = libusb_submit_transfer(xfer);
+
+	if(res < 0) {
 		usbmuxd_log(LL_ERROR, "Failed to submit TX transfer %p len %d to device %d-%d: %s", buf, length, dev->bus, dev->address, libusb_error_name(res));
 		libusb_free_transfer(xfer);
 		return res;
@@ -543,8 +564,27 @@ static int set_valid_configuration(struct libusb_device* dev, struct usb_device 
 			}
 			if((res = libusb_set_configuration(handle, j)) != 0) {
 				usbmuxd_log(LL_WARNING, "Could not set configuration %d for device %d-%d: %s", j, bus, address, libusb_error_name(res));
-				libusb_free_config_descriptor(config);
-				continue;
+
+				// If configuration fails with BUSY, try resetting the device
+				if(res == LIBUSB_ERROR_BUSY) {
+					usbmuxd_log(LL_INFO, "Device %d-%d is busy, attempting reset", bus, address);
+					if((res = libusb_reset_device(handle)) == 0) {
+						usbmuxd_log(LL_INFO, "Reset successful, retrying configuration");
+						res = libusb_set_configuration(handle, j);
+						if(res == 0) {
+							usbmuxd_log(LL_INFO, "Configuration set successfully after reset");
+						} else {
+							usbmuxd_log(LL_WARNING, "Configuration still failed after reset: %s", libusb_error_name(res));
+						}
+					} else {
+						usbmuxd_log(LL_WARNING, "Reset failed: %s", libusb_error_name(res));
+					}
+				}
+
+				if(res != 0) {
+					libusb_free_config_descriptor(config);
+					continue;
+				}
 			}
 		}
 		
@@ -1088,10 +1128,22 @@ void usb_shutdown(void)
 	libusb_hotplug_deregister_callback(NULL, usb_hotplug_cb_handle);
 #endif
 
+	// First remove all devices from tracking
 	FOREACH(struct usb_device *usbdev, &device_list) {
 		device_remove(usbdev);
 		usb_disconnect(usbdev);
 	} ENDFOREACH
 	collection_free(&device_list);
+
+	// Process any remaining USB events to ensure cleanup completes
+	struct timeval tv;
+	tv.tv_sec = 0;
+	tv.tv_usec = 100000; // 100ms
+	libusb_handle_events_timeout(NULL, &tv);
+
+	// Now exit libusb context
 	libusb_exit(NULL);
+
+	// Small delay to ensure kernel releases USB devices
+	usleep(100000); // 100ms
 }

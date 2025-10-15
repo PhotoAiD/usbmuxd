@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <netinet/in.h>
@@ -58,10 +59,11 @@ static const char *socket_path = "/var/run/usbmuxd";
 static const char *lockfile = DEFAULT_LOCKFILE;
 
 // Global state used in other files
-int should_exit;
+volatile int should_exit;
 int should_discover;
 int use_logfile = 0;
 int no_preflight = 0;
+volatile int should_restart = 0;
 
 // Global state for main.c
 static int verbose = 0;
@@ -74,6 +76,12 @@ static int opt_exit = 0;
 static int exit_signal = 0;
 static int daemon_pipe;
 static const char *listen_addr = NULL;
+
+// Restart mechanism variables
+static char **saved_argv = NULL;
+static int saved_argc = 0;
+static int restart_count = 0;
+static char real_executable_path[1024] = {0};
 
 static int report_to_parent = 0;
 
@@ -253,6 +261,12 @@ static int create_socket(void)
 
 static void handle_signal(int sig)
 {
+	if (sig == SIGHUP && should_restart) {
+		// SIGHUP is used internally for restart mechanism
+		usbmuxd_log(LL_INFO, "Caught SIGHUP for restart, triggering exit");
+		should_exit = 1;
+		return;
+	}
 	if (sig != SIGUSR1 && sig != SIGUSR2) {
 		usbmuxd_log(LL_NOTICE,"Caught signal %d, exiting", sig);
 		should_exit = 1;
@@ -289,6 +303,7 @@ static void set_signal_handlers(void)
 	sigaddset(&set, SIGTERM);
 	sigaddset(&set, SIGUSR1);
 	sigaddset(&set, SIGUSR2);
+	sigaddset(&set, SIGHUP);
 	sigprocmask(SIG_SETMASK, &set, NULL);
 
 	memset(&sa, 0, sizeof(struct sigaction));
@@ -298,6 +313,7 @@ static void set_signal_handlers(void)
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGUSR1, &sa, NULL);
 	sigaction(SIGUSR2, &sa, NULL);
+	sigaction(SIGHUP, &sa, NULL);
 }
 
 #ifndef HAVE_PPOLL
@@ -670,6 +686,29 @@ int main(int argc, char *argv[])
 	struct flock lock;
 	char pids[10];
 
+	// Save original arguments for potential restart
+	// We need to create a proper NULL-terminated copy for execv
+	saved_argc = argc;
+	saved_argv = malloc(sizeof(char*) * (argc + 1));
+	for (int i = 0; i < argc; i++) {
+		saved_argv[i] = argv[i];
+	}
+	saved_argv[argc] = NULL;  // execv requires NULL termination
+
+	// Get the real executable path at startup
+	ssize_t len = readlink("/proc/self/exe", real_executable_path, sizeof(real_executable_path) - 1);
+	if (len > 0) {
+		real_executable_path[len] = '\0';
+		usbmuxd_log(LL_DEBUG, "Executable path: %s", real_executable_path);
+	} else {
+		// Fallback to argv[0] if /proc/self/exe doesn't work
+		if (realpath(argv[0], real_executable_path) == NULL) {
+			strncpy(real_executable_path, argv[0], sizeof(real_executable_path) - 1);
+			real_executable_path[sizeof(real_executable_path) - 1] = '\0';
+		}
+		usbmuxd_log(LL_DEBUG, "Using fallback executable path: %s", real_executable_path);
+	}
+
 	parse_opts(argc, argv);
 
 	argc -= optind;
@@ -686,8 +725,17 @@ int main(int argc, char *argv[])
 	log_level = verbose;
 
 	usbmuxd_log(LL_NOTICE, "usbmuxd v%s starting up", PACKAGE_VERSION);
+
+	// Check if this is a restart
+	char *restart_env = getenv("USBMUXD_RESTART_COUNT");
+	if (restart_env) {
+		int count = atoi(restart_env);
+		usbmuxd_log(LL_NOTICE, "This is restart attempt %d/3", count);
+	}
+
 	should_exit = 0;
 	should_discover = 0;
+	should_restart = 0;
 
 	set_signal_handlers();
 	signal(SIGPIPE, SIG_IGN);
@@ -900,6 +948,74 @@ int main(int argc, char *argv[])
 		usbmuxd_log(LL_FATAL, "main_loop failed");
 
 	usbmuxd_log(LL_NOTICE, "usbmuxd shutting down");
+
+	// Check if we should restart instead of exiting
+	if (should_restart) {
+		// Get restart count from environment variable
+		char *restart_count_env = getenv("USBMUXD_RESTART_COUNT");
+		if (restart_count_env) {
+			restart_count = atoi(restart_count_env);
+		}
+
+		if (restart_count < 3) {
+			restart_count++;
+
+			usbmuxd_log(LL_WARNING, "Restarting usbmuxd (attempt %d/3) due to device disconnect error", restart_count);
+
+			// Set environment variable for next restart
+			char count_str[32];
+			snprintf(count_str, sizeof(count_str), "%d", restart_count);
+			setenv("USBMUXD_RESTART_COUNT", count_str, 1);
+
+			// First clean up everything completely
+			device_kill_connections();
+			usb_shutdown();
+			device_shutdown();
+			client_shutdown();
+
+			// Close the listening socket to free the port
+			if (listenfd >= 0) {
+				close(listenfd);
+				listenfd = -1;
+			}
+
+			// Remove socket file if using Unix socket
+			if (socket_path && access(socket_path, F_OK) == 0) {
+				unlink(socket_path);
+			}
+
+			// Close lockfile if we have one
+			if (lfd >= 0) {
+				close(lfd);
+				lfd = -1;
+				if (lockfile) {
+					unlink(lockfile);
+				}
+			}
+
+			usbmuxd_log(LL_NOTICE, "Cleanup complete, waiting before restart...");
+
+			// Wait a moment to ensure all resources are freed
+			sleep(2);
+
+			// Clear the signal mask before exec
+			sigset_t sigset;
+			sigemptyset(&sigset);
+			sigprocmask(SIG_SETMASK, &sigset, NULL);
+
+			// Execute the program directly (no fork)
+			usbmuxd_log(LL_INFO, "Executing restart...");
+			execv(real_executable_path, saved_argv);
+
+			// If execv fails, report it
+			usbmuxd_log(LL_FATAL, "Failed to restart %s: %s", real_executable_path, strerror(errno));
+			// Fall through to normal cleanup
+		} else {
+			usbmuxd_log(LL_ERROR, "Restart limit reached (3 attempts), terminating");
+		}
+	}
+
+	// Normal shutdown path (or if restart failed)
 	device_kill_connections();
 	usb_shutdown();
 	device_shutdown();
